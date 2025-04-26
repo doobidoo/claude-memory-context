@@ -9,6 +9,121 @@ const { hideBin } = require('yargs/helpers');
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+
+// Try to detect Claude Desktop configuration paths
+function findClaudeDesktopConfig() {
+  let configPath = '';
+  let configExists = false;
+  
+  try {
+    const homeDir = os.homedir();
+    let appDataPath = '';
+    
+    // Determine OS-specific application data directory
+    if (process.platform === 'win32') {
+      // Windows
+      appDataPath = path.join(homeDir, 'AppData', 'Roaming', 'Claude');
+    } else if (process.platform === 'darwin') {
+      // macOS
+      appDataPath = path.join(homeDir, 'Library', 'Application Support', 'Claude');
+    } else if (process.platform === 'linux') {
+      // Linux
+      appDataPath = path.join(homeDir, '.config', 'Claude');
+    }
+    
+    // Check for settings.json or config.json
+    const possibleNames = ['settings.json', 'config.json', 'preferences.json'];
+    for (const name of possibleNames) {
+      const tryPath = path.join(appDataPath, name);
+      if (fs.existsSync(tryPath)) {
+        configPath = tryPath;
+        configExists = true;
+        break;
+      }
+    }
+    
+    // Additional checks for other potential locations
+    if (!configExists) {
+      // Try detecting Claude Beta locations
+      const betaPath = path.join(appDataPath, 'Beta');
+      if (fs.existsSync(betaPath)) {
+        for (const name of possibleNames) {
+          const tryPath = path.join(betaPath, name);
+          if (fs.existsSync(tryPath)) {
+            configPath = tryPath;
+            configExists = true;
+            break;
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('Error detecting Claude Desktop configuration:', error.message);
+  }
+  
+  return { configPath, configExists };
+}
+
+// Parse Claude Desktop configuration to extract MCP memory service settings
+function parseClaudeDesktopConfig(configPath) {
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const memoryConfig = config?.memory || config?.tools?.memory || {};
+    
+    // Extract memory service settings
+    const mcpMemoryDir = extractPathFromArgs(memoryConfig?.args || []);
+    const chromaDbPath = memoryConfig?.env?.MCP_MEMORY_CHROMA_PATH || '';
+    const backupsPath = memoryConfig?.env?.MCP_MEMORY_BACKUPS_PATH || '';
+    const cliCommand = memoryConfig?.command || 'uv';
+    
+    return {
+      found: !!(mcpMemoryDir && chromaDbPath),
+      mcpMemoryDir,
+      chromaDbPath,
+      backupsPath,
+      cliCommand
+    };
+  } catch (error) {
+    console.warn('Error parsing Claude Desktop configuration:', error.message);
+    return { found: false };
+  }
+}
+
+// Extract memory service directory from args array
+function extractPathFromArgs(args) {
+  // In the Claude Desktop config, the directory is typically specified after "--directory"
+  const dirIndex = args.indexOf('--directory');
+  if (dirIndex !== -1 && dirIndex + 1 < args.length) {
+    return args[dirIndex + 1];
+  }
+  return '';
+}
+
+// Auto-detect Claude Desktop configuration and MCP memory settings
+function autoDetectClaudeDesktopSettings() {
+  const { configPath, configExists } = findClaudeDesktopConfig();
+  
+  if (configExists) {
+    console.log(`Found Claude Desktop configuration at ${configPath}`);
+    const settings = parseClaudeDesktopConfig(configPath);
+    
+    if (settings.found) {
+      console.log('Successfully detected MCP memory service settings:');
+      console.log(`- MCP Memory Directory: ${settings.mcpMemoryDir}`);
+      console.log(`- ChromaDB Path: ${settings.chromaDbPath}`);
+      console.log(`- Backups Path: ${settings.backupsPath}`);
+      console.log(`- CLI Command: ${settings.cliCommand}`);
+      return settings;
+    } else {
+      console.warn('Found Claude Desktop configuration, but could not detect MCP memory service settings');
+    }
+  } else {
+    console.warn('Could not find Claude Desktop configuration');
+  }
+  
+  return { found: false };
+}
 
 // Parse command line arguments
 const argv = yargs(hideBin(process.argv))
@@ -24,9 +139,9 @@ const argv = yargs(hideBin(process.argv))
   })
   .option('mode', {
     type: 'string',
-    description: 'Mode to interact with MCP service: "http" or "cli"',
-    choices: ['http', 'cli'],
-    default: 'http'
+    description: 'Mode to interact with MCP service: "http", "cli", or "auto" (tries to auto-detect)',
+    choices: ['http', 'cli', 'auto'],
+    default: 'auto'
   })
   // Options for HTTP mode
   .option('mcp-url', {
@@ -71,22 +186,48 @@ const argv = yargs(hideBin(process.argv))
     description: 'Template prefix to use for memory context',
     default: 'You have a searchable memory. '
   })
-  .check((argv) => {
-    if (argv.mode === 'cli') {
-      if (!argv.mcpMemoryDir) {
-        throw new Error('--mcp-memory-dir is required when using CLI mode');
-      }
-      if (!argv.chromaDbPath) {
-        throw new Error('--chroma-db-path is required when using CLI mode');
-      }
-      if (!argv.backupsPath) {
-        throw new Error('--backups-path is required when using CLI mode');
-      }
-    }
-    return true;
-  })
   .help()
   .argv;
+
+// If mode is 'auto', try to auto-detect Claude Desktop settings
+let actualMode = argv.mode;
+let cliOptions = {};
+
+if (argv.mode === 'auto') {
+  const detectedSettings = autoDetectClaudeDesktopSettings();
+  
+  if (detectedSettings.found) {
+    actualMode = 'cli';
+    cliOptions = detectedSettings;
+    
+    // Override CLI options with detected settings
+    argv.mcpMemoryDir = detectedSettings.mcpMemoryDir;
+    argv.chromaDbPath = detectedSettings.chromaDbPath;
+    argv.backupsPath = detectedSettings.backupsPath;
+    argv.cliCommand = detectedSettings.cliCommand;
+    
+    console.log('Automatically using CLI mode with detected settings');
+  } else {
+    actualMode = 'http';
+    console.log('Could not detect Claude Desktop settings, falling back to HTTP mode');
+  }
+}
+
+// Validate required arguments for CLI mode
+if (actualMode === 'cli') {
+  if (!argv.mcpMemoryDir) {
+    console.error('Error: --mcp-memory-dir is required when using CLI mode');
+    process.exit(1);
+  }
+  if (!argv.chromaDbPath) {
+    console.error('Error: --chroma-db-path is required when using CLI mode');
+    process.exit(1);
+  }
+  if (!argv.backupsPath) {
+    console.error('Error: --backups-path is required when using CLI mode');
+    process.exit(1);
+  }
+}
 
 // Function to query memories from MCP service via HTTP
 async function getMemorySummaryHttp() {
@@ -218,7 +359,7 @@ async function getMemorySummaryCli() {
 
 // Choose the appropriate method based on mode
 async function getMemorySummary() {
-  if (argv.mode === 'http') {
+  if (actualMode === 'http') {
     return getMemorySummaryHttp();
   } else {
     return getMemorySummaryCli();
@@ -329,7 +470,7 @@ async function updateProjectInstructions(memoryContext) {
 // Main function
 async function main() {
   try {
-    console.log(`Running in ${argv.mode.toUpperCase()} mode`);
+    console.log(`Running in ${actualMode.toUpperCase()} mode`);
     
     console.log('Fetching memory summary from MCP service...');
     const memorySummary = await getMemorySummary();
