@@ -34,6 +34,38 @@ Required dependencies:
 - axios
 - yargs
 
+## Setting Up Claude Project Instructions
+
+Before running the script, you need to set up your Claude project with special markers that the script will use to insert memory context:
+
+1. Create a new project in Claude's web interface
+2. In the project settings, find the system prompt/custom instructions section
+3. Add the following markers where you want the memory context to appear:
+
+```
+<!-- MEMORY CONTEXT START -->
+You have a searchable memory.
+<!-- MEMORY CONTEXT END -->
+```
+
+For example, your complete project instructions might look like:
+
+```
+# Project Instructions
+
+You are my personal assistant. Please be concise and helpful in your responses.
+
+<!-- MEMORY CONTEXT START -->
+You have a searchable memory.
+<!-- MEMORY CONTEXT END -->
+
+Remember to always check your facts and be transparent about what you know and don't know.
+```
+
+The script will replace everything between these markers with the memory context. Anything outside the markers will remain unchanged.
+
+See [docs/claude-project-template.md](docs/claude-project-template.md) for more detailed examples and best practices.
+
 ## Usage
 
 ```bash
@@ -70,8 +102,26 @@ crontab -e
 1. First, create a Project in Claude's web interface
 2. Get your Project ID from the URL (e.g., `https://claude.ai/project/{project_id}`)
 3. Get your Anthropic API key from your account settings
-4. Run this script to update the project instructions
-5. When you chat with Claude in this project, it will now have memory awareness
+4. Add the memory context markers to your project instructions (see above)
+5. Run this script to update the project instructions
+6. When you chat with Claude in this project, it will now have memory awareness
+
+The memory context section will look something like this after the script runs:
+
+```
+<!-- MEMORY CONTEXT START -->
+You have a searchable memory. 
+
+Recent topics you remember include: programming, python, machine learning, data analysis, meeting notes.
+
+Important long-term memories include:
+- Project deadline for TechCorp is May 15th, 2025. Deliverables include API integration and dashboard...
+- My daughter's birthday is June 12. She wants a science kit and books about space...
+- Monthly team meeting agenda template: 1. Project updates 2. Roadblocks 3. Next sprint planning...
+
+If the user mentions any of these topics or needs additional information, you can help them retrieve more from their memory by suggesting they ask about specific topics or use the memory search functions.
+<!-- MEMORY CONTEXT END -->
+```
 
 ## Tips for Effective Use
 
@@ -79,6 +129,7 @@ crontab -e
 2. Consider creating a dedicated project for memory-aware conversations
 3. The script preserves other custom instructions in your project
 4. Check logs to ensure updates are working correctly
+5. Place the memory context markers near the beginning of your instructions for best results
 
 ## Limitations
 
