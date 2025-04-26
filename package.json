@@ -1,0 +1,22 @@
+{
+  "name": "claude-memory-context",
+  "version": "1.0.0",
+  "description": "A utility to update Claude project instructions with context from your MCP memory service",
+  "main": "memory-context-script.js",
+  "scripts": {
+    "start": "node memory-context-script.js"
+  },
+  "keywords": [
+    "claude",
+    "anthropic",
+    "mcp",
+    "memory",
+    "context"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.2",
+    "yargs": "^17.7.2"
+  }
+}
