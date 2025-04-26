@@ -1,11 +1,198 @@
 #!/usr/bin/env node
 
-// memory-context-script.js - Updates Claude project instructions with memory context
-// Usage: node memory-context-script.js --anthropic-api-key YOUR_API_KEY --project-id YOUR_PROJECT_ID
+// memory-context-script.js - Updates Claude project instructions with context from your MCP memory service
 
 const axios = require('axios');
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+console.log('=== Starting Memory Context Update ===');
+
+// Custom function to find Claude Desktop config specific to this user's system
+function findClaudeDesktopConfig() {
+  // Check the specific file path mentioned by the user
+  const specificPath = path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
+  
+  if (fs.existsSync(specificPath)) {
+    console.log(`Found Claude Desktop configuration at ${specificPath}`);
+    return { configPath: specificPath, configExists: true };
+  }
+  
+  // Fall back to general search logic
+  let configPath = '';
+  let configExists = false;
+  
+  try {
+    const homeDir = os.homedir();
+    let appDataPath = '';
+    
+    // Determine OS-specific application data directory
+    if (process.platform === 'win32') {
+      // Windows
+      appDataPath = path.join(homeDir, 'AppData', 'Roaming', 'Claude');
+    } else if (process.platform === 'darwin') {
+      // macOS
+      appDataPath = path.join(homeDir, 'Library', 'Application Support', 'Claude');
+    } else if (process.platform === 'linux') {
+      // Linux
+      appDataPath = path.join(homeDir, '.config', 'Claude');
+    }
+    
+    // Check for various possible config file names
+    const possibleNames = [
+      'claude_desktop_config.json',
+      'settings.json', 
+      'config.json', 
+      'preferences.json'
+    ];
+    
+    for (const name of possibleNames) {
+      const tryPath = path.join(appDataPath, name);
+      if (fs.existsSync(tryPath)) {
+        configPath = tryPath;
+        configExists = true;
+        console.log(`Found configuration file: ${tryPath}`);
+        break;
+      }
+    }
+  } catch (error) {
+    console.warn('Error detecting Claude Desktop configuration:', error.message);
+  }
+  
+  if (!configExists) {
+    console.warn('Could not find Claude Desktop configuration file');
+  }
+  
+  return { configPath, configExists };
+}
+
+// Parse Claude Desktop configuration to extract MCP memory service settings
+// Parse Claude Desktop configuration to extract MCP memory service settings
+function parseClaudeDesktopConfig(configPath) {
+  try {
+    console.log(`Reading config file: ${configPath}`);
+    const configContent = fs.readFileSync(configPath, 'utf8');
+    console.log(`Config file content length: ${configContent.length} characters`);
+    
+    const config = JSON.parse(configContent);
+    
+    // Log the structure to help debug
+    console.log('Top level config keys:', Object.keys(config));
+    
+    // Look for memory service in mcpServers section
+    const mcpServers = config.mcpServers || {};
+    console.log('Available MCP servers:', Object.keys(mcpServers));
+    
+    // Look for a server that might be the memory service
+    let memoryServer = null;
+    
+    // First try to find a server with "memory" in the name
+    for (const [serverName, serverConfig] of Object.entries(mcpServers)) {
+      if (serverName.toLowerCase().includes('memory')) {
+        console.log(`Found memory server by name: ${serverName}`);
+        memoryServer = { name: serverName, config: serverConfig };
+        break;
+      }
+    }
+    
+    // If no memory server found by name, try to examine each server's args
+    if (!memoryServer) {
+      for (const [serverName, serverConfig] of Object.entries(mcpServers)) {
+        if (Array.isArray(serverConfig.args) && 
+            (serverConfig.args.includes('memory') || 
+             serverConfig.args.some(arg => arg && arg.includes && arg.includes('memory')))) {
+          console.log(`Found likely memory server: ${serverName}`);
+          memoryServer = { name: serverName, config: serverConfig };
+          break;
+        }
+      }
+    }
+    
+    if (!memoryServer) {
+      console.log('Could not identify memory service in mcpServers configuration');
+      return { found: false };
+    }
+    
+    console.log('Memory server configuration:', JSON.stringify(memoryServer.config, null, 2));
+    
+    // Extract memory service settings
+    let mcpMemoryDir = '';
+    
+    // Look for directory in args
+    if (Array.isArray(memoryServer.config.args)) {
+      // Print all args for debugging
+      console.log('Server args:', memoryServer.config.args);
+      
+      // Look for --directory argument
+      const dirIndex = memoryServer.config.args.indexOf('--directory');
+      if (dirIndex !== -1 && dirIndex + 1 < memoryServer.config.args.length) {
+        mcpMemoryDir = memoryServer.config.args[dirIndex + 1];
+      }
+      
+      // If no --directory found, look for a path that might be the memory service
+      if (!mcpMemoryDir) {
+        for (const arg of memoryServer.config.args) {
+          if (typeof arg === 'string' && 
+              (arg.includes('memory-service') || arg.includes('mcp-memory'))) {
+            mcpMemoryDir = arg;
+            break;
+          }
+        }
+      }
+    }
+    
+    // Get environment variables
+    const env = memoryServer.config.env || {};
+    const chromaDbPath = env.MCP_MEMORY_CHROMA_PATH || '';
+    const backupsPath = env.MCP_MEMORY_BACKUPS_PATH || '';
+    const cliCommand = memoryServer.config.command || 'uv';
+    
+    console.log('Extracted configuration:');
+    console.log(`- MCP Memory Directory: ${mcpMemoryDir}`);
+    console.log(`- ChromaDB Path: ${chromaDbPath}`);
+    console.log(`- Backups Path: ${backupsPath}`);
+    console.log(`- CLI Command: ${cliCommand}`);
+    
+    return {
+      found: !!(mcpMemoryDir && chromaDbPath),
+      mcpMemoryDir,
+      chromaDbPath,
+      backupsPath,
+      cliCommand
+    };
+  } catch (error) {
+    console.warn('Error parsing Claude Desktop configuration:', error.message);
+    if (error instanceof SyntaxError) {
+      console.warn('JSON parsing error - the config file might not be valid JSON');
+    }
+    return { found: false };
+  }
+}
+
+// Auto-detect Claude Desktop configuration and MCP memory settings
+function autoDetectClaudeDesktopSettings() {
+  const { configPath, configExists } = findClaudeDesktopConfig();
+  
+  if (configExists) {
+    console.log(`Found Claude Desktop configuration at ${configPath}`);
+    const settings = parseClaudeDesktopConfig(configPath);
+    
+    if (settings.found) {
+      console.log('Successfully detected MCP memory service settings');
+      return settings;
+    } else {
+      console.warn('Found Claude Desktop configuration, but could not detect MCP memory service settings');
+    }
+  } else {
+    console.warn('Could not find Claude Desktop configuration');
+  }
+  
+  return { found: false };
+}
 
 // Parse command line arguments
 const argv = yargs(hideBin(process.argv))
@@ -19,11 +206,40 @@ const argv = yargs(hideBin(process.argv))
     description: 'Claude Project ID',
     demandOption: true
   })
+  .option('mode', {
+    type: 'string',
+    description: 'Mode to interact with MCP service: "http", "cli", or "auto"',
+    choices: ['http', 'cli', 'auto'],
+    default: 'auto'
+  })
+  // Options for HTTP mode
   .option('mcp-url', {
     type: 'string',
-    description: 'MCP memory service URL',
+    description: 'MCP memory service URL (for HTTP mode)',
     default: 'http://localhost:8000'
   })
+  // Options for CLI mode
+  .option('mcp-memory-dir', {
+    type: 'string',
+    description: 'Path to MCP Memory Service directory (for CLI mode)',
+    default: process.env.MCP_MEMORY_DIR || ''
+  })
+  .option('chroma-db-path', {
+    type: 'string',
+    description: 'Path to ChromaDB data directory (for CLI mode)',
+    default: process.env.MCP_MEMORY_CHROMA_PATH || ''
+  })
+  .option('backups-path', {
+    type: 'string',
+    description: 'Path to backups directory (for CLI mode)',
+    default: process.env.MCP_MEMORY_BACKUPS_PATH || ''
+  })
+  .option('cli-command', {
+    type: 'string',
+    description: 'Command to run MCP service (uv or npx)',
+    default: 'uv'
+  })
+  // Common options
   .option('max-recent-memories', {
     type: 'number',
     description: 'Maximum number of recent memories to include',
@@ -42,9 +258,34 @@ const argv = yargs(hideBin(process.argv))
   .help()
   .argv;
 
-// Function to query memories from MCP service
-async function getMemorySummary() {
+// If mode is 'auto', try to auto-detect Claude Desktop settings
+let actualMode = argv.mode;
+let cliOptions = {};
+
+if (argv.mode === 'auto') {
+  const detectedSettings = autoDetectClaudeDesktopSettings();
+  
+  if (detectedSettings.found) {
+    actualMode = 'cli';
+    
+    // Override CLI options with detected settings
+    argv.mcpMemoryDir = detectedSettings.mcpMemoryDir;
+    argv.chromaDbPath = detectedSettings.chromaDbPath;
+    argv.backupsPath = detectedSettings.backupsPath;
+    argv.cliCommand = detectedSettings.cliCommand;
+    
+    console.log('Automatically using CLI mode with detected settings');
+  } else {
+    actualMode = 'http';
+    console.log('Could not detect Claude Desktop settings, falling back to HTTP mode');
+  }
+}
+
+// Function to query memories from MCP service via HTTP
+async function getMemorySummaryHttp() {
   try {
+    console.log(`Querying MCP service at: ${argv.mcpUrl}`);
+    
     // Get recent memories (last 48 hours)
     const recentResponse = await axios.post(`${argv.mcpUrl}/mcp`, {
       tool: 'memory',
@@ -76,8 +317,116 @@ async function getMemorySummary() {
       importantMemories
     };
   } catch (error) {
-    console.error('Error querying MCP memory service:', error.message);
+    console.error('Error querying MCP memory service:');
+    console.error(`Status: ${error.response?.status}`);
+    console.error(`Status Text: ${error.response?.statusText}`);
+    console.error(`Error Details: ${error.response?.data}`);
+    console.error(`Request URL: ${error.config?.url}`);
+    console.error(`Request Method: ${error.config?.method}`);
     return { recentMemories: [], importantMemories: [] };
+  }
+}
+
+// Function to query memories from MCP service via CLI
+async function getMemorySummaryCli() {
+  try {
+    console.log(`Getting memories via CLI from ${argv.mcpMemoryDir}...`);
+    
+    // Set up environment variables
+    const env = {
+      ...process.env,
+      MCP_MEMORY_CHROMA_PATH: argv.chromaDbPath,
+      MCP_MEMORY_BACKUPS_PATH: argv.backupsPath
+    };
+    
+    // Make sure the paths exist
+    if (!fs.existsSync(argv.mcpMemoryDir)) {
+      throw new Error(`MCP Memory Service directory not found: ${argv.mcpMemoryDir}`);
+    }
+    if (!fs.existsSync(argv.chromaDbPath)) {
+      // Create the directory if it doesn't exist
+      fs.mkdirSync(argv.chromaDbPath, { recursive: true });
+      console.log(`Created ChromaDB directory: ${argv.chromaDbPath}`);
+    }
+    if (!fs.existsSync(argv.backupsPath)) {
+      // Create the directory if it doesn't exist
+      fs.mkdirSync(argv.backupsPath, { recursive: true });
+      console.log(`Created backups directory: ${argv.backupsPath}`);
+    }
+    
+    // Get recent memories (last 48 hours)
+    console.log('Getting recent memories...');
+    const recentQuery = JSON.stringify({
+      query: 'recall what was stored in the last 48 hours',
+      n_results: argv.maxRecentMemories
+    });
+    
+    const cliCmd = argv.cliCommand === 'npx' ? 'npx' : 'uv';
+    const recentMemoriesCmd = execSync(
+      `${cliCmd} --directory "${argv.mcpMemoryDir}" run memory recall_memory '${recentQuery}'`,
+      { env, encoding: 'utf-8' }
+    );
+    
+    // Parse the output
+    let recentMemories = [];
+    try {
+      const recentResult = JSON.parse(recentMemoriesCmd.toString());
+      recentMemories = recentResult.result || [];
+    } catch (error) {
+      console.error('Error parsing recent memories output:', error.message);
+      console.error('Output was:', recentMemoriesCmd);
+    }
+    
+    // Get important memories (tagged as important)
+    console.log('Getting important memories...');
+    const importantQuery = JSON.stringify({
+      tags: ['important']
+    });
+    
+    const importantMemoriesCmd = execSync(
+      `${cliCmd} --directory "${argv.mcpMemoryDir}" run memory search_by_tag '${importantQuery}'`,
+      { env, encoding: 'utf-8' }
+    );
+    
+    // Parse the output
+    let importantMemories = [];
+    try {
+      const importantResult = JSON.parse(importantMemoriesCmd.toString());
+      importantMemories = importantResult.result || [];
+      
+      // Limit important memories to specified max
+      importantMemories = importantMemories.slice(0, argv.maxImportantMemories);
+    } catch (error) {
+      console.error('Error parsing important memories output:', error.message);
+      console.error('Output was:', importantMemoriesCmd);
+    }
+    
+    return {
+      recentMemories,
+      importantMemories
+    };
+  } catch (error) {
+    console.error('Error executing MCP memory service via CLI:', error.message);
+    return { recentMemories: [], importantMemories: [] };
+  }
+}
+
+// Choose the appropriate method based on mode
+async function getMemorySummary() {
+  console.log(`Running in ${actualMode.toUpperCase()} mode`);
+  
+  if (actualMode === 'http') {
+    return getMemorySummaryHttp();
+  } else if (actualMode === 'cli') {
+    return getMemorySummaryCli();
+  } else {
+    // Auto mode - try CLI first, then fall back to HTTP if it fails
+    try {
+      return await getMemorySummaryCli();
+    } catch (error) {
+      console.log('CLI mode failed, falling back to HTTP mode');
+      return getMemorySummaryHttp();
+    }
   }
 }
 
@@ -104,9 +453,9 @@ function formatMemoryContext(memorySummary) {
     contextText += '\n\nImportant long-term memories include:';
     importantMemories.forEach(memory => {
       // Truncate content if too long
-      const content = memory.content.length > 100 
+      const content = memory.content?.length > 100 
         ? memory.content.substring(0, 100) + '...' 
-        : memory.content;
+        : (memory.content || 'No content');
       
       contextText += `\n- ${content}`;
     });
@@ -123,9 +472,11 @@ function formatMemoryContext(memorySummary) {
 // Update Claude project instructions 
 async function updateProjectInstructions(memoryContext) {
   try {
+    console.log(`Updating project ${argv.projectId} with Anthropic API...`);
+    
     // First, get current project details
     const getResponse = await axios.get(
-      `https://api.anthropic.com/v1/projects/${argv.projectId}`,
+      `https://api.anthropic.com/v1/human/projects/${argv.projectId}`,
       {
         headers: {
           'x-api-key': argv.anthropicApiKey,
@@ -135,6 +486,7 @@ async function updateProjectInstructions(memoryContext) {
     );
     
     const project = getResponse.data;
+    console.log('Successfully retrieved project details');
     
     // Update memory section in system prompt
     // Keep other sections intact
@@ -146,13 +498,16 @@ async function updateProjectInstructions(memoryContext) {
     
     if (memorySection.test(systemPrompt)) {
       systemPrompt = systemPrompt.replace(memorySection, newMemorySection);
+      console.log('Replaced existing memory context section');
     } else {
       systemPrompt += `\n\n${newMemorySection}`;
+      console.log('Added new memory context section');
     }
     
     // Update project with new system prompt
+    console.log('Sending updated project instructions...');
     await axios.patch(
-      `https://api.anthropic.com/v1/projects/${argv.projectId}`,
+      `https://api.anthropic.com/v1/human/projects/${argv.projectId}`,
       {
         system_prompt: systemPrompt
       },
@@ -166,29 +521,37 @@ async function updateProjectInstructions(memoryContext) {
     );
     
     console.log('Successfully updated project instructions with memory context');
+    return true;
   } catch (error) {
     console.error('Error updating project instructions:', error.message);
     if (error.response) {
       console.error('API response:', error.response.data);
     }
+    return false;
   }
 }
 
 // Main function
 async function main() {
   try {
-    console.log('Fetching memory summary from MCP service...');
     const memorySummary = await getMemorySummary();
     
     console.log('Formatting memory context...');
     const memoryContext = formatMemoryContext(memorySummary);
     
-    console.log('Updating Claude project instructions...');
-    await updateProjectInstructions(memoryContext);
+    const success = await updateProjectInstructions(memoryContext);
     
-    console.log('Memory context successfully injected into Claude project instructions');
+    if (success) {
+      console.log('✅ Memory context successfully injected into Claude project instructions');
+      process.exit(0);
+    } else {
+      console.error('❌ Failed to update Claude project instructions');
+      process.exit(1);
+    }
   } catch (error) {
-    console.error('Error in memory context script:', error.message);
+    console.error('❌ Script execution failed:');
+    console.error(error.message);
+    console.error(`\nThe Path: ${__filename}`);
     process.exit(1);
   }
 }
