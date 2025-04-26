@@ -68,31 +68,43 @@ See [docs/claude-project-template.md](docs/claude-project-template.md) for more 
 
 ## Usage
 
-This utility supports two modes of operation to accommodate different MCP Memory Service setups:
+This utility supports three modes of operation to accommodate different MCP Memory Service setups:
 
-### HTTP Mode (Default)
+### Auto Mode (Default and Recommended)
+
+The simplest way to use this utility - it automatically detects your Claude Desktop configuration:
+
+```bash
+# Automatic detection (recommended for Claude Desktop users)
+node memory-context-script.js --anthropic-api-key your_api_key --project-id your_project_id
+```
+
+In auto mode, the script:
+1. Searches for Claude Desktop configuration in your system
+2. Extracts MCP Memory Service paths and settings
+3. Falls back to HTTP mode if no configuration is found
+
+This works best for Claude Desktop users as it requires minimal configuration.
+
+### HTTP Mode
 
 Use this mode if your MCP Memory Service is running as a web service (e.g., via Docker, standalone server, or Cloudflare Worker).
 
 ```bash
-# Basic usage with MCP service running on localhost:8000
+# Explicitly use HTTP mode
 node memory-context-script.js \
-  --anthropic-api-key your_api_key \
-  --project-id your_project_id
-
-# With custom MCP service URL
-node memory-context-script.js \
+  --mode http \
   --anthropic-api-key your_api_key \
   --project-id your_project_id \
   --mcp-url http://your-mcp-service:8000
 ```
 
-### CLI Mode (For Claude Desktop)
+### CLI Mode
 
-Use this mode if you're using Claude Desktop, which runs the MCP Memory Service directly via command line rather than as a web service.
+Use this mode if you want to explicitly specify the paths to your MCP Memory Service (instead of auto-detection).
 
 ```bash
-# For Claude Desktop setup
+# Explicitly use CLI mode
 node memory-context-script.js \
   --mode cli \
   --anthropic-api-key your_api_key \
@@ -140,7 +152,7 @@ Note: If your Claude Desktop uses `npx` instead of `uv`, add `--cli-command npx`
 node memory-context-script.js \
   --anthropic-api-key your_api_key \
   --project-id your_project_id \
-  --mode http|cli \
+  --mode auto|http|cli \
   --mcp-url http://localhost:8000 \
   --mcp-memory-dir "/path/to/mcp-memory-service" \
   --chroma-db-path "/path/to/chroma_db" \
@@ -160,11 +172,8 @@ You can use cron to run this script periodically:
 crontab -e
 
 # Add a line to run every hour (adjust path as needed)
-# For HTTP mode:
+# For auto mode (recommended):
 0 * * * * cd /path/to/claude-memory-context && node memory-context-script.js --anthropic-api-key your_api_key --project-id your_project_id
-
-# For CLI mode:
-0 * * * * cd /path/to/claude-memory-context && node memory-context-script.js --mode cli --anthropic-api-key your_api_key --project-id your_project_id --mcp-memory-dir "/path/to/mcp-memory-service" --chroma-db-path "/path/to/chroma_db" --backups-path "/path/to/backups"
 ```
 
 For Windows users, you can use Task Scheduler instead of cron.
@@ -195,6 +204,22 @@ If the user mentions any of these topics or needs additional information, you ca
 <!-- MEMORY CONTEXT END -->
 ```
 
+## Auto-Detection Details
+
+The auto-detection feature searches for Claude Desktop configuration in common application data directories:
+
+- **Windows**: `%APPDATA%\Claude\settings.json` or similar
+- **macOS**: `~/Library/Application Support/Claude/settings.json` or similar 
+- **Linux**: `~/.config/Claude/settings.json` or similar
+
+From this configuration, it extracts:
+- The MCP Memory Service directory path
+- The ChromaDB data path
+- The backups path
+- The CLI command (uv or npx)
+
+If the configuration is found and parsed successfully, the script will automatically use CLI mode with these settings. If not, it falls back to HTTP mode.
+
 ## Tips for Effective Use
 
 1. Use the `important` tag for memories you always want available to Claude
@@ -202,7 +227,7 @@ If the user mentions any of these topics or needs additional information, you ca
 3. The script preserves other custom instructions in your project
 4. Check logs to ensure updates are working correctly
 5. Place the memory context markers near the beginning of your instructions for best results
-6. For Claude Desktop users, make sure the paths match exactly what's in your Claude settings
+6. For Claude Desktop users, the auto-detection mode should work without additional configuration
 
 ## Limitations
 
@@ -210,6 +235,7 @@ If the user mentions any of these topics or needs additional information, you ca
 - Only tagged and recent memories are included for conciseness
 - This script requires the Anthropic API, which is a paid service
 - Requires a running MCP Memory Service instance with populated memories
+- Auto-detection may not work with non-standard Claude Desktop installations
 
 ## Complete System Setup
 
