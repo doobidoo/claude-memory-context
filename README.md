@@ -68,18 +68,84 @@ See [docs/claude-project-template.md](docs/claude-project-template.md) for more 
 
 ## Usage
 
+This utility supports two modes of operation to accommodate different MCP Memory Service setups:
+
+### HTTP Mode (Default)
+
+Use this mode if your MCP Memory Service is running as a web service (e.g., via Docker, standalone server, or Cloudflare Worker).
+
 ```bash
-# Basic usage
-node memory-context-script.js --anthropic-api-key your_api_key --project-id your_project_id
+# Basic usage with MCP service running on localhost:8000
+node memory-context-script.js \
+  --anthropic-api-key your_api_key \
+  --project-id your_project_id
 
 # With custom MCP service URL
-node memory-context-script.js --anthropic-api-key your_api_key --project-id your_project_id --mcp-url http://your-mcp-service:8000
-
-# All options
 node memory-context-script.js \
   --anthropic-api-key your_api_key \
   --project-id your_project_id \
+  --mcp-url http://your-mcp-service:8000
+```
+
+### CLI Mode (For Claude Desktop)
+
+Use this mode if you're using Claude Desktop, which runs the MCP Memory Service directly via command line rather than as a web service.
+
+```bash
+# For Claude Desktop setup
+node memory-context-script.js \
+  --mode cli \
+  --anthropic-api-key your_api_key \
+  --project-id your_project_id \
+  --mcp-memory-dir "/path/to/mcp-memory-service" \
+  --chroma-db-path "/path/to/chroma_db" \
+  --backups-path "/path/to/backups"
+```
+
+For Windows users:
+```bash
+node memory-context-script.js ^
+  --mode cli ^
+  --anthropic-api-key your_api_key ^
+  --project-id your_project_id ^
+  --mcp-memory-dir "C:\REPOSITORIES\mcp-memory-service" ^
+  --chroma-db-path "C:\Users\YourUsername\AppData\Local\mcp-memory\chroma_db" ^
+  --backups-path "C:\Users\YourUsername\AppData\Local\mcp-memory\backups"
+```
+
+This mode uses the same setup as specified in your Claude Desktop settings JSON:
+```json
+{
+  "memory": {
+    "command": "uv",
+    "args": [
+      "--directory",
+      "your_mcp_memory_service_directory",
+      "run",
+      "memory"
+    ],
+    "env": {
+      "MCP_MEMORY_CHROMA_PATH": "your_chroma_db_path",
+      "MCP_MEMORY_BACKUPS_PATH": "your_backups_path"
+    }
+  }
+}
+```
+
+Note: If your Claude Desktop uses `npx` instead of `uv`, add `--cli-command npx` to the command.
+
+### All Options
+
+```bash
+node memory-context-script.js \
+  --anthropic-api-key your_api_key \
+  --project-id your_project_id \
+  --mode http|cli \
   --mcp-url http://localhost:8000 \
+  --mcp-memory-dir "/path/to/mcp-memory-service" \
+  --chroma-db-path "/path/to/chroma_db" \
+  --backups-path "/path/to/backups" \
+  --cli-command uv|npx \
   --max-recent-memories 5 \
   --max-important-memories 3 \
   --memory-prefix "You have a searchable memory. "
@@ -94,8 +160,14 @@ You can use cron to run this script periodically:
 crontab -e
 
 # Add a line to run every hour (adjust path as needed)
+# For HTTP mode:
 0 * * * * cd /path/to/claude-memory-context && node memory-context-script.js --anthropic-api-key your_api_key --project-id your_project_id
+
+# For CLI mode:
+0 * * * * cd /path/to/claude-memory-context && node memory-context-script.js --mode cli --anthropic-api-key your_api_key --project-id your_project_id --mcp-memory-dir "/path/to/mcp-memory-service" --chroma-db-path "/path/to/chroma_db" --backups-path "/path/to/backups"
 ```
+
+For Windows users, you can use Task Scheduler instead of cron.
 
 ## How to Use with Claude
 
@@ -130,6 +202,7 @@ If the user mentions any of these topics or needs additional information, you ca
 3. The script preserves other custom instructions in your project
 4. Check logs to ensure updates are working correctly
 5. Place the memory context markers near the beginning of your instructions for best results
+6. For Claude Desktop users, make sure the paths match exactly what's in your Claude settings
 
 ## Limitations
 
