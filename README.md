@@ -2,6 +2,15 @@
 
 A simple utility that updates Claude project instructions with context from your MCP memory service. This enables Claude to start conversations with awareness of your memory contents.
 
+## Prerequisites
+
+**Important**: This utility requires:
+1. An active [MCP Memory Service](https://github.com/doobidoo/mcp-memory-service) installation
+2. An Anthropic API key with access to Claude's project API endpoints
+3. Node.js installed on your system
+
+The MCP Memory Service must be properly set up and running before this utility can function. This script does not install or configure the memory service itself—it only connects to an existing installation.
+
 ## What It Does
 
 This script:
@@ -14,7 +23,7 @@ This script:
 
 ```bash
 # Clone this repository
-git clone https://github.com/yourusername/claude-memory-context.git
+git clone https://github.com/doobidoo/claude-memory-context.git
 cd claude-memory-context
 
 # Install dependencies
@@ -76,6 +85,15 @@ crontab -e
 - The Anthropic API has character limits for project instructions (~100k chars)
 - Only tagged and recent memories are included for conciseness
 - This script requires the Anthropic API, which is a paid service
+- Requires a running MCP Memory Service instance with populated memories
+
+## Complete System Setup
+
+For a full memory-aware Claude setup, you'll need:
+
+1. **MCP Memory Service**: Install and configure the [MCP Memory Service](https://github.com/doobidoo/mcp-memory-service) first
+2. **Claude API Access**: Sign up for [Anthropic's API](https://www.anthropic.com/api) to get an API key
+3. **This Utility**: Install this script to bridge the two systems together
 
 ## License
 
