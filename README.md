@@ -2,6 +2,12 @@
 
 A simple utility that updates Claude project instructions with context from your MCP memory service. This enables Claude to start conversations with awareness of your memory contents.
 
+# 🚧 Work in Progress 🚧
+
+This project is actively under development.  
+Features may change, break, or improve rapidly!  
+Stay tuned for updates — contributions and feedback are welcome!
+
 ## Prerequisites
 
 **Important**: This utility requires:
