@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/init)",
+      "Bash(/terminal-setup)",
+      "Bash(claude /init)",
+      "Bash(claude /terminal-setup)",
+      "Bash(find:*)",
+      "Bash(sqlite3:*)",
+      "Bash(ls:*)",
+      "Bash(rg:*)"
+    ],
+    "deny": []
+  }
+}

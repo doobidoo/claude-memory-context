@@ -332,6 +332,10 @@ async function getMemorySummaryCli() {
   try {
     console.log(`Getting memories via CLI from ${argv.mcpMemoryDir}...`);
     
+    // First, start the memory service as a server on a temporary port
+    const tempPort = 8765;
+    console.log(`Starting memory service on port ${tempPort}...`);
+    
     // Set up environment variables
     const env = {
       ...process.env,
@@ -339,67 +343,58 @@ async function getMemorySummaryCli() {
       MCP_MEMORY_BACKUPS_PATH: argv.backupsPath
     };
     
-    // Make sure the paths exist
-    if (!fs.existsSync(argv.mcpMemoryDir)) {
-      throw new Error(`MCP Memory Service directory not found: ${argv.mcpMemoryDir}`);
-    }
-    if (!fs.existsSync(argv.chromaDbPath)) {
-      // Create the directory if it doesn't exist
-      fs.mkdirSync(argv.chromaDbPath, { recursive: true });
-      console.log(`Created ChromaDB directory: ${argv.chromaDbPath}`);
-    }
-    if (!fs.existsSync(argv.backupsPath)) {
-      // Create the directory if it doesn't exist
-      fs.mkdirSync(argv.backupsPath, { recursive: true });
-      console.log(`Created backups directory: ${argv.backupsPath}`);
-    }
+    // Start the server in the background
+    const serverProcess = require('child_process').spawn(
+      argv.cliCommand,
+      [
+        '--directory', argv.mcpMemoryDir,
+        'run', 'memory', 'server',
+        '--port', tempPort.toString()
+      ],
+      { 
+        env,
+        detached: true,
+        stdio: 'ignore'
+      }
+    );
+    
+    // Wait for server to start
+    console.log('Waiting for server to start...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // Now query the server using HTTP
+    console.log(`Querying memory service at http://localhost:${tempPort}...`);
     
     // Get recent memories (last 48 hours)
-    console.log('Getting recent memories...');
-    const recentQuery = JSON.stringify({
-      query: 'recall what was stored in the last 48 hours',
-      n_results: argv.maxRecentMemories
+    const recentResponse = await axios.post(`http://localhost:${tempPort}/mcp`, {
+      tool: 'memory',
+      action: 'recall_memory',
+      input: {
+        query: 'recall what was stored in the last 48 hours',
+        n_results: argv.maxRecentMemories
+      }
     });
-    
-    const cliCmd = argv.cliCommand === 'npx' ? 'npx' : 'uv';
-    const recentMemoriesCmd = execSync(
-      `${cliCmd} --directory "${argv.mcpMemoryDir}" run memory recall_memory '${recentQuery}'`,
-      { env, encoding: 'utf-8' }
-    );
-    
-    // Parse the output
-    let recentMemories = [];
-    try {
-      const recentResult = JSON.parse(recentMemoriesCmd.toString());
-      recentMemories = recentResult.result || [];
-    } catch (error) {
-      console.error('Error parsing recent memories output:', error.message);
-      console.error('Output was:', recentMemoriesCmd);
-    }
     
     // Get important memories (tagged as important)
-    console.log('Getting important memories...');
-    const importantQuery = JSON.stringify({
-      tags: ['important']
+    const importantResponse = await axios.post(`http://localhost:${tempPort}/mcp`, {
+      tool: 'memory',
+      action: 'search_by_tag',
+      input: {
+        tags: ['important']
+      }
     });
     
-    const importantMemoriesCmd = execSync(
-      `${cliCmd} --directory "${argv.mcpMemoryDir}" run memory search_by_tag '${importantQuery}'`,
-      { env, encoding: 'utf-8' }
-    );
-    
-    // Parse the output
-    let importantMemories = [];
-    try {
-      const importantResult = JSON.parse(importantMemoriesCmd.toString());
-      importantMemories = importantResult.result || [];
-      
-      // Limit important memories to specified max
-      importantMemories = importantMemories.slice(0, argv.maxImportantMemories);
-    } catch (error) {
-      console.error('Error parsing important memories output:', error.message);
-      console.error('Output was:', importantMemoriesCmd);
+    // Kill the server process
+    if (serverProcess.pid) {
+      process.kill(-serverProcess.pid);
     }
+    
+    // Extract memories from responses
+    const recentMemories = recentResponse.data.result || [];
+    let importantMemories = importantResponse.data.result || [];
+    
+    // Limit important memories to specified max
+    importantMemories = importantMemories.slice(0, argv.maxImportantMemories);
     
     return {
       recentMemories,
@@ -474,19 +469,42 @@ async function updateProjectInstructions(memoryContext) {
   try {
     console.log(`Updating project ${argv.projectId} with Anthropic API...`);
     
-    // First, get current project details
-    const getResponse = await axios.get(
+    // Try different API endpoints
+    const possibleEndpoints = [
+      `https://api.anthropic.com/v1/projects/${argv.projectId}`,
       `https://api.anthropic.com/v1/human/projects/${argv.projectId}`,
-      {
-        headers: {
-          'x-api-key': argv.anthropicApiKey,
-          'anthropic-version': '2023-06-01'
-        }
-      }
-    );
+      `https://api.anthropic.com/v1/users/me/projects/${argv.projectId}`,
+      `https://api.anthropic.com/v1/claude-beta/projects/${argv.projectId}`
+    ];
     
-    const project = getResponse.data;
-    console.log('Successfully retrieved project details');
+    let project = null;
+    let usedEndpoint = '';
+    
+    // Try to get project details from different endpoints
+    for (const endpoint of possibleEndpoints) {
+      try {
+        console.log(`Trying to get project from: ${endpoint}`);
+        const response = await axios.get(endpoint, {
+          headers: {
+            'x-api-key': argv.anthropicApiKey,
+            'anthropic-version': '2023-06-01'
+          }
+        });
+        
+        if (response.status === 200 && response.data) {
+          project = response.data;
+          usedEndpoint = endpoint;
+          console.log(`Successfully retrieved project details from ${endpoint}`);
+          break;
+        }
+      } catch (error) {
+        console.log(`Endpoint ${endpoint} failed: ${error.message}`);
+      }
+    }
+    
+    if (!project) {
+      throw new Error('Could not retrieve project details from any endpoint');
+    }
     
     // Update memory section in system prompt
     // Keep other sections intact
@@ -504,10 +522,10 @@ async function updateProjectInstructions(memoryContext) {
       console.log('Added new memory context section');
     }
     
-    // Update project with new system prompt
+    // Update project with new system prompt using the same endpoint that worked
     console.log('Sending updated project instructions...');
     await axios.patch(
-      `https://api.anthropic.com/v1/human/projects/${argv.projectId}`,
+      usedEndpoint,
       {
         system_prompt: systemPrompt
       },
@@ -531,6 +549,57 @@ async function updateProjectInstructions(memoryContext) {
   }
 }
 
+// Instead of updateProjectInstructions, create a function to save the context to a file
+async function saveMemoryContextToFile(memoryContext) {
+  try {
+    // Format the complete memory context with markers
+    const formattedContext = `<!-- MEMORY CONTEXT START -->\n${memoryContext}\n<!-- MEMORY CONTEXT END -->`;
+    
+    // Save to a file
+    const outputPath = path.join(process.cwd(), 'memory-context.txt');
+    fs.writeFileSync(outputPath, formattedContext, 'utf8');
+    
+    console.log(`Memory context saved to: ${outputPath}`);
+    console.log('\nYou can now copy this content into your Claude project instructions at:');
+    console.log(`https://claude.ai/project/${argv.projectId}`);
+    
+    // Also print to console for convenience
+    console.log('\n--- MEMORY CONTEXT ---');
+    console.log(formattedContext);
+    console.log('--- END MEMORY CONTEXT ---');
+    
+    return true;
+  } catch (error) {
+    console.error('Error saving memory context:', error.message);
+    return false;
+  }
+}
+
+// In the main function, replace updateProjectInstructions with saveMemoryContextToFile
+async function main() {
+  try {
+    const memorySummary = await getMemorySummary();
+    
+    console.log('Formatting memory context...');
+    const memoryContext = formatMemoryContext(memorySummary);
+    
+    const success = await saveMemoryContextToFile(memoryContext);
+    
+    if (success) {
+      console.log('✅ Memory context generated successfully');
+      process.exit(0);
+    } else {
+      console.error('❌ Failed to generate memory context');
+      process.exit(1);
+    }
+  } catch (error) {
+    console.error('❌ Script execution failed:');
+    console.error(error.message);
+    console.error(`\nThe Path: ${__filename}`);
+    process.exit(1);
+  }
+}
+
 // Main function
 async function main() {
   try {
@@ -539,7 +608,8 @@ async function main() {
     console.log('Formatting memory context...');
     const memoryContext = formatMemoryContext(memorySummary);
     
-    const success = await updateProjectInstructions(memoryContext);
+    // const success = await updateProjectInstructions(memoryContext);
+    const success = await saveMemoryContextToFile(memoryContext);
     
     if (success) {
       console.log('✅ Memory context successfully injected into Claude project instructions');
