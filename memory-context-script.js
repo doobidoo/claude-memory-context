@@ -575,7 +575,7 @@ async function saveMemoryContextToFile(memoryContext) {
   }
 }
 
-// In the main function, replace updateProjectInstructions with saveMemoryContextToFile
+// Main function
 async function main() {
   try {
     const memorySummary = await getMemorySummary();
@@ -590,32 +590,6 @@ async function main() {
       process.exit(0);
     } else {
       console.error('❌ Failed to generate memory context');
-      process.exit(1);
-    }
-  } catch (error) {
-    console.error('❌ Script execution failed:');
-    console.error(error.message);
-    console.error(`\nThe Path: ${__filename}`);
-    process.exit(1);
-  }
-}
-
-// Main function
-async function main() {
-  try {
-    const memorySummary = await getMemorySummary();
-    
-    console.log('Formatting memory context...');
-    const memoryContext = formatMemoryContext(memorySummary);
-    
-    // const success = await updateProjectInstructions(memoryContext);
-    const success = await saveMemoryContextToFile(memoryContext);
-    
-    if (success) {
-      console.log('✅ Memory context successfully injected into Claude project instructions');
-      process.exit(0);
-    } else {
-      console.error('❌ Failed to update Claude project instructions');
       process.exit(1);
     }
   } catch (error) {
