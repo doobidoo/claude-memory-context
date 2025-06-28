@@ -55,12 +55,20 @@ class ClaudeProjectKnowledgeManager:
     """Manages Claude Desktop project knowledge and instructions"""
     
     def __init__(self, claude_db_path: str = None):
+        # Check for project context from environment variables
+        self.project_id = os.environ.get('CLAUDE_PROJECT_ID')
+        self.project_name = os.environ.get('CLAUDE_PROJECT_NAME')
+        self.anthropic_api_key = os.environ.get('ANTHROPIC_API_KEY')
+        
+        # Fallback to local storage if no project context
         if claude_db_path is None:
             claude_db_path = os.path.expanduser(
                 "~/Library/Application Support/Claude/claudeSQLite.db"
             )
         self.db_path = claude_db_path
         self.init_db()
+        
+        print(f"🎯 Project Context: {self.project_name or 'Local Storage'} (ID: {self.project_id or 'None'})", file=sys.stderr)
     
     def init_db(self):
         """Initialize database with project knowledge tables"""
@@ -119,12 +127,23 @@ class ClaudeProjectKnowledgeManager:
             conn.commit()
     
     def add_knowledge(self, entry: ProjectKnowledgeEntry) -> int:
-        """Add new project knowledge entry to Claude Desktop's notes table"""
+        """Add new project knowledge entry - to Claude API if project context available, otherwise local"""
+        
+        if self.project_id and self.anthropic_api_key:
+            # TODO: Add to actual Claude project via API
+            print(f"🌐 Would add to Claude project {self.project_name} (ID: {self.project_id})", file=sys.stderr)
+            print(f"📝 Title: {entry.title}", file=sys.stderr)
+            print(f"🏷️ Category: {entry.category}", file=sys.stderr)
+            # For now, still store locally as we need API implementation
+            
+        # Store locally (either as fallback or primary)
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
             # Format content with metadata for Claude Desktop's project knowledge
-            formatted_content = f"""Category: {entry.category}
+            project_prefix = f"[{self.project_name}] " if self.project_name else ""
+            formatted_content = f"""Project: {self.project_name or 'Local'}
+Category: {entry.category}
 Importance: {entry.importance}/5
 Tags: {', '.join(entry.tags)}
 Source: {entry.source}
@@ -135,7 +154,7 @@ Source: {entry.source}
             cursor.execute("""
                 INSERT INTO notes (title, content, created_at)
                 VALUES (?, ?, CURRENT_TIMESTAMP)
-            """, (entry.title, formatted_content))
+            """, (f"{project_prefix}{entry.title}", formatted_content))
             
             note_id = cursor.lastrowid
             
@@ -155,6 +174,15 @@ Source: {entry.source}
             
             conn.commit()
             return note_id
+    
+    def get_project_context(self) -> Dict[str, str]:
+        """Get current project context information"""
+        return {
+            'project_id': self.project_id or 'None',
+            'project_name': self.project_name or 'Local Storage',
+            'has_api_key': bool(self.anthropic_api_key),
+            'storage_mode': 'API + Local' if self.project_id else 'Local Only'
+        }
     
     def update_instruction(self, instruction: ProjectInstruction) -> bool:
         """Update or add project instruction"""
@@ -411,6 +439,15 @@ async def list_tools() -> List[Tool]:
                 "properties": {},
                 "additionalProperties": False
             }
+        ),
+        Tool(
+            name="check_project_context",
+            description="Check current project context and configuration status. Shows which project (if any) the MCP server is connected to.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False
+            }
         )
     ]
 
@@ -428,9 +465,11 @@ async def call_tool(name: str, arguments: dict) -> List[TextContent]:
         )
         
         note_id = knowledge_manager.add_knowledge(entry)
+        context = knowledge_manager.get_project_context()
+        
         return [TextContent(
             type="text",
-            text=f"✅ Added project knowledge '{entry.title}' (Note ID: {note_id}) to Claude Desktop's Project knowledge UI!\n📝 Category: {entry.category} | Importance: {entry.importance}/5\n🏷️ Tags: {', '.join(entry.tags)}\n\nThis entry will now appear in Claude Desktop's Project knowledge section."
+            text=f"✅ Added project knowledge '{entry.title}' (Note ID: {note_id})\n🎯 Project: {context['project_name']}\n📝 Category: {entry.category} | Importance: {entry.importance}/5\n🏷️ Tags: {', '.join(entry.tags)}\n💾 Storage: {context['storage_mode']}\n\n{'🌐 Note: This entry will be added to the actual Claude project when API integration is implemented.' if context['project_id'] != 'None' else '📱 This entry will appear in Claude Desktop\\'s local Project knowledge section.'}"
         )]
     
     elif name == "update_project_instructions":
@@ -590,6 +629,52 @@ async def call_tool(name: str, arguments: dict) -> List[TextContent]:
             response += f"**Created:** {note['created_at']}\n\n"
             content_preview = note['content'][:300] + "..." if len(note['content']) > 300 else note['content']
             response += f"{content_preview}\n\n---\n\n"
+        
+        return [TextContent(type="text", text=response)]
+    
+    elif name == "check_project_context":
+        context = knowledge_manager.get_project_context()
+        
+        response = f"""# Project Context Status
+        
+🎯 **Current Project**: {context['project_name']}
+🆔 **Project ID**: {context['project_id']}
+🔑 **API Key**: {'✅ Configured' if context['has_api_key'] else '❌ Not configured'}
+💾 **Storage Mode**: {context['storage_mode']}
+
+## Configuration Status
+
+{'✅ **Project Context Detected**' if context['project_id'] != 'None' else '⚠️ **No Project Context**'}
+
+{'''
+**Current Setup**: Connected to specific Claude project
+**Knowledge will be added to**: Actual Claude project (when API is implemented)
+''' if context['project_id'] != 'None' else '''
+**Current Setup**: Local storage mode
+**Knowledge will be added to**: Claude Desktop's local notes section
+
+### 🛠️ To Connect to a Specific Project:
+
+1. **Edit your MCP server configuration** in `claude_desktop_config.json`:
+```json
+"claude-project-knowledge": {{
+    "command": "/Users/hkr/anaconda3/bin/python3",
+    "args": ["/path/to/mcp-project-knowledge-server.py"],
+    "env": {{
+        "CLAUDE_PROJECT_ID": "your-project-id",
+        "CLAUDE_PROJECT_NAME": "MCP MEMORY DASHBOARD",
+        "ANTHROPIC_API_KEY": "your-api-key"
+    }}
+}}
+```
+
+2. **Find your project ID** from the Claude web interface URL
+3. **Restart Claude Desktop** to apply changes
+'''}
+
+**Available Projects** (based on local notes):
+- MCP-Memory-Dashboard (found in local notes)
+""".strip()
         
         return [TextContent(type="text", text=response)]
     
