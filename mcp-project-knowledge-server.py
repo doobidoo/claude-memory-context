@@ -67,6 +67,16 @@ class ClaudeProjectKnowledgeManager:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
+            # Create notes table (Claude Desktop's Project knowledge UI)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
             # Create project_knowledge table if it doesn't exist
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS project_knowledge (
@@ -109,9 +119,27 @@ class ClaudeProjectKnowledgeManager:
             conn.commit()
     
     def add_knowledge(self, entry: ProjectKnowledgeEntry) -> int:
-        """Add new project knowledge entry"""
+        """Add new project knowledge entry to Claude Desktop's notes table"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
+            
+            # Format content with metadata for Claude Desktop's project knowledge
+            formatted_content = f"""Category: {entry.category}
+Importance: {entry.importance}/5
+Tags: {', '.join(entry.tags)}
+Source: {entry.source}
+
+{entry.content}"""
+            
+            # Insert into Claude Desktop's notes table (appears in Project knowledge UI)
+            cursor.execute("""
+                INSERT INTO notes (title, content, created_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+            """, (entry.title, formatted_content))
+            
+            note_id = cursor.lastrowid
+            
+            # Also store in our custom table for advanced querying
             cursor.execute("""
                 INSERT INTO project_knowledge 
                 (title, content, category, tags, importance, source)
@@ -124,8 +152,9 @@ class ClaudeProjectKnowledgeManager:
                 entry.importance,
                 entry.source
             ))
+            
             conn.commit()
-            return cursor.lastrowid
+            return note_id
     
     def update_instruction(self, instruction: ProjectInstruction) -> bool:
         """Update or add project instruction"""
@@ -267,6 +296,26 @@ class ClaudeProjectKnowledgeManager:
                     'updated_at': row[3]
                 }
             return context
+    
+    def get_claude_desktop_notes(self) -> List[Dict]:
+        """Get notes from Claude Desktop's UI (what appears in Project knowledge)"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, title, content, created_at
+                FROM notes
+                ORDER BY created_at DESC
+            """)
+            
+            results = []
+            for row in cursor.fetchall():
+                results.append({
+                    'id': row[0],
+                    'title': row[1],
+                    'content': row[2],
+                    'created_at': row[3]
+                })
+            return results
 
 
 # Initialize the knowledge manager
@@ -353,6 +402,15 @@ async def list_tools() -> List[Tool]:
                 },
                 "required": ["conversation_summary"]
             }
+        ),
+        Tool(
+            name="get_claude_desktop_notes",
+            description="Get all notes that appear in Claude Desktop's Project knowledge UI. Use this to see what's actually visible in the interface.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False
+            }
         )
     ]
 
@@ -369,10 +427,10 @@ async def call_tool(name: str, arguments: dict) -> List[TextContent]:
             importance=arguments.get("importance", 3)
         )
         
-        knowledge_id = knowledge_manager.add_knowledge(entry)
+        note_id = knowledge_manager.add_knowledge(entry)
         return [TextContent(
             type="text",
-            text=f"✅ Added project knowledge '{entry.title}' (ID: {knowledge_id}) to category '{entry.category}' with importance level {entry.importance}"
+            text=f"✅ Added project knowledge '{entry.title}' (Note ID: {note_id}) to Claude Desktop's Project knowledge UI!\n📝 Category: {entry.category} | Importance: {entry.importance}/5\n🏷️ Tags: {', '.join(entry.tags)}\n\nThis entry will now appear in Claude Desktop's Project knowledge section."
         )]
     
     elif name == "update_project_instructions":
@@ -514,6 +572,24 @@ async def call_tool(name: str, arguments: dict) -> List[TextContent]:
             response += f"\nBased on analysis of {len(knowledge)} knowledge entries and {len(instructions)} instruction sections."
         else:
             response += "No specific improvements suggested at this time. The project knowledge appears well-organized."
+        
+        return [TextContent(type="text", text=response)]
+    
+    elif name == "get_claude_desktop_notes":
+        notes = knowledge_manager.get_claude_desktop_notes()
+        
+        if not notes:
+            return [TextContent(
+                type="text",
+                text="No notes found in Claude Desktop's Project knowledge section."
+            )]
+        
+        response = f"# Claude Desktop Project Knowledge ({len(notes)} entries)\n\n"
+        for note in notes:
+            response += f"## {note['title']}\n"
+            response += f"**Created:** {note['created_at']}\n\n"
+            content_preview = note['content'][:300] + "..." if len(note['content']) > 300 else note['content']
+            response += f"{content_preview}\n\n---\n\n"
         
         return [TextContent(type="text", text=response)]
     
