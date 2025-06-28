@@ -467,9 +467,14 @@ async def call_tool(name: str, arguments: dict) -> List[TextContent]:
         note_id = knowledge_manager.add_knowledge(entry)
         context = knowledge_manager.get_project_context()
         
+        # Prepare status message without backslashes in f-string
+        api_note = "🌐 Note: This entry will be added to the actual Claude project when API integration is implemented."
+        local_note = "📱 This entry will appear in Claude Desktop's local Project knowledge section."
+        status_note = api_note if context['project_id'] != 'None' else local_note
+        
         return [TextContent(
             type="text",
-            text=f"✅ Added project knowledge '{entry.title}' (Note ID: {note_id})\n🎯 Project: {context['project_name']}\n📝 Category: {entry.category} | Importance: {entry.importance}/5\n🏷️ Tags: {', '.join(entry.tags)}\n💾 Storage: {context['storage_mode']}\n\n{'🌐 Note: This entry will be added to the actual Claude project when API integration is implemented.' if context['project_id'] != 'None' else '📱 This entry will appear in Claude Desktop\\'s local Project knowledge section.'}"
+            text=f"✅ Added project knowledge '{entry.title}' (Note ID: {note_id})\n🎯 Project: {context['project_name']}\n📝 Category: {entry.category} | Importance: {entry.importance}/5\n🏷️ Tags: {', '.join(entry.tags)}\n💾 Storage: {context['storage_mode']}\n\n{status_note}"
         )]
     
     elif name == "update_project_instructions":
