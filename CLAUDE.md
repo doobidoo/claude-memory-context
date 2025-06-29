@@ -11,6 +11,7 @@ This project provides tools for integrating Claude AI with memory and context ma
 - `requirements.txt` - Python dependencies for MCP servers
 - `package.json` - Node.js project configuration and dependencies
 - `docs/claude-project-template.md` - Template documentation for Claude projects
+- `docs/autonomous-decision-making.md` - Technical deep-dive on autonomous AI decision-making
 
 ## Key Components
 
