@@ -66,6 +66,192 @@ class ClaudeWebProjectManager:
         self.current_project: Optional[ClaudeProject] = None
         self.available_projects: List[ClaudeProject] = []
         
+    async def detect_current_project_context(self) -> Optional[ClaudeProject]:
+        """Dynamically detect current project context using multiple methods with timeout handling"""
+        print("🔍 Detecting current project context dynamically...", file=sys.stderr)
+        
+        detection_results = []
+        
+        # Method 1: Environment Variables (fast)
+        try:
+            env_result = self._detect_from_environment()
+            if env_result:
+                detection_results.append(("environment", env_result, 5))
+                print(f"📧 Environment detection: {env_result['name']}", file=sys.stderr)
+                # Return immediately if we have a high-confidence result
+                return ClaudeProject(
+                    id=env_result['id'],
+                    name=env_result['name'],
+                    url=f"https://claude.ai/project/{env_result['id']}"
+                )
+        except Exception as e:
+            print(f"Environment detection failed: {e}", file=sys.stderr)
+            
+        # Method 2: Database Analysis (fast)
+        try:
+            db_result = self._detect_from_database()
+            if db_result:
+                detection_results.append(("database", db_result, 4))
+                print(f"💾 Database detection: {db_result['name']}", file=sys.stderr)
+                # Return immediately if we have a good result
+                return ClaudeProject(
+                    id=db_result['id'],
+                    name=db_result['name'],
+                    url=f"https://claude.ai/project/{db_result['id']}"
+                )
+        except Exception as e:
+            print(f"Database detection failed: {e}", file=sys.stderr)
+            
+        # Method 3: Process Analysis (fast)
+        try:
+            process_result = self._detect_from_processes()
+            if process_result:
+                detection_results.append(("process", process_result, 3))
+                print(f"⚙️ Process detection: {process_result['name']}", file=sys.stderr)
+                # Return immediately if we have a result
+                return ClaudeProject(
+                    id=process_result['id'],
+                    name=process_result['name'],
+                    url=f"https://claude.ai/project/{process_result['id']}"
+                )
+        except Exception as e:
+            print(f"Process detection failed: {e}", file=sys.stderr)
+        
+        # Method 4: Browser Detection (slow, with timeout)
+        try:
+            print("🌐 Attempting browser detection with timeout...", file=sys.stderr)
+            browser_result = await asyncio.wait_for(
+                self._detect_from_browser(), 
+                timeout=10.0  # 10 second timeout
+            )
+            if browser_result:
+                detection_results.append(("browser", browser_result, 5))
+                print(f"🌐 Browser detection: {browser_result['name']}", file=sys.stderr)
+                return ClaudeProject(
+                    id=browser_result['id'],
+                    name=browser_result['name'],
+                    url=f"https://claude.ai/project/{browser_result['id']}"
+                )
+        except asyncio.TimeoutError:
+            print("⏰ Browser detection timed out (10s), skipping...", file=sys.stderr)
+        except Exception as e:
+            print(f"Browser detection failed: {e}", file=sys.stderr)
+        
+        print("❌ No project context detected from any method", file=sys.stderr)
+        return None
+    
+    def _detect_from_environment(self) -> Optional[Dict]:
+        """Detect project from environment variables"""
+        try:
+            project_id = os.environ.get('CLAUDE_PROJECT_ID')
+            project_name = os.environ.get('CLAUDE_PROJECT_NAME')
+            
+            if project_id:
+                return {
+                    'id': project_id,
+                    'name': project_name or f"Project {project_id[:8]}"
+                }
+        except Exception as e:
+            print(f"Environment detection failed: {e}", file=sys.stderr)
+        return None
+    
+    async def _detect_from_browser(self) -> Optional[Dict]:
+        """Detect project from active browser tabs"""
+        try:
+            # Skip browser detection if browser isn't already initialized to avoid slow startup
+            if not self.browser:
+                print("🚫 Browser not initialized, skipping browser detection to avoid timeout", file=sys.stderr)
+                return None
+                
+            # Get all pages/tabs with timeout
+            try:
+                pages = self.browser.pages
+                
+                for page in pages:
+                    try:
+                        # Quick URL check first
+                        url = page.url
+                        if 'claude.ai/project/' in url:
+                            project_id = url.split('/project/')[-1].split('/')[0]
+                            
+                            # Try to get project name from page title with timeout
+                            try:
+                                title = await asyncio.wait_for(page.title(), timeout=2.0)
+                                project_name = title if title and 'Claude' not in title else f"Project {project_id[:8]}"
+                            except (asyncio.TimeoutError, Exception):
+                                project_name = f"Project {project_id[:8]}"
+                            
+                            return {
+                                'id': project_id,
+                                'name': project_name
+                            }
+                    except Exception:
+                        continue
+                        
+            except Exception as e:
+                print(f"Error accessing browser pages: {e}", file=sys.stderr)
+                    
+        except Exception as e:
+            print(f"Browser detection failed: {e}", file=sys.stderr)
+        return None
+    
+    def _detect_from_database(self) -> Optional[Dict]:
+        """Detect project from Claude Desktop's database"""
+        try:
+            import sqlite3
+            db_path = os.path.expanduser("~/Library/Application Support/Claude/claudeSQLite.db")
+            
+            if not os.path.exists(db_path):
+                return None
+                
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Look for recent project-related activity
+                cursor.execute("""
+                    SELECT title, content, created_at FROM notes 
+                    WHERE title LIKE '%project%' OR content LIKE '%project%'
+                    ORDER BY created_at DESC LIMIT 5
+                """)
+                
+                for title, content, created_at in cursor.fetchall():
+                    # Extract project ID from content if available
+                    import re
+                    project_matches = re.findall(r'project/([a-f0-9-]{36})', content)
+                    if project_matches:
+                        project_id = project_matches[0]
+                        return {
+                            'id': project_id,
+                            'name': title or f"Project {project_id[:8]}"
+                        }
+                        
+        except Exception as e:
+            print(f"Database detection failed: {e}", file=sys.stderr)
+        return None
+    
+    def _detect_from_processes(self) -> Optional[Dict]:
+        """Detect project from running processes"""
+        try:
+            import subprocess
+            result = subprocess.run(['ps', 'aux'], capture_output=True, text=True)
+            
+            # Look for Claude processes with project information
+            for line in result.stdout.split('\n'):
+                if 'Claude' in line and 'project' in line.lower():
+                    # Try to extract project ID from command line
+                    import re
+                    project_matches = re.findall(r'project/([a-f0-9-]{36})', line)
+                    if project_matches:
+                        project_id = project_matches[0]
+                        return {
+                            'id': project_id,
+                            'name': f"Project {project_id[:8]}"
+                        }
+                        
+        except Exception as e:
+            print(f"Process detection failed: {e}", file=sys.stderr)
+        return None
+        
     async def init_browser(self):
         """Initialize browser for web automation"""
         try:
@@ -241,8 +427,8 @@ class ClaudeWebProjectManager:
             print(f"❌ Failed to list projects: {e}", file=sys.stderr)
             return []
     
-    async def access_current_project(self, project_id: str = "019763b5-7ee3-7585-9bde-18f5a8a387be") -> bool:
-        """Access the current project directly by ID"""
+    async def access_current_project(self, project_id: str) -> bool:
+        """Access a specific project directly by ID"""
         try:
             if not self.page:
                 if not await self.init_browser():
@@ -464,7 +650,7 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="add_project_knowledge",
-            description="Add new knowledge to the currently selected Claude project via web interface automation.",
+            description="Add new knowledge to a Claude project via web interface automation. Automatically detects current project if none is selected.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -487,13 +673,23 @@ async def list_tools() -> List[Tool]:
             }
         ),
         Tool(
+            name="detect_current_project_context",
+            description="Dynamically detect the current Claude Desktop project context using multiple detection methods. No project ID needed - automatically finds your active project.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False
+            }
+        ),
+        Tool(
             name="access_current_project",
-            description="Access the current Claude Desktop project directly (019763b5-7ee3-7585-9bde-18f5a8a387be). Use this to connect to your active project.",
+            description="Access a specific Claude Desktop project by ID. Use detect_current_project_context for automatic detection.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "string", "description": "Project ID (defaults to current)", "default": "019763b5-7ee3-7585-9bde-18f5a8a387be"}
-                }
+                    "project_id": {"type": "string", "description": "Project ID to access"}
+                },
+                "required": ["project_id"]
             }
         )
     ]
@@ -536,12 +732,35 @@ async def call_tool(name: str, arguments: dict) -> List[TextContent]:
                 text=f"❌ Failed to select project '{project_id}'. Use `list_claude_projects` to see available projects."
             )]
     
-    elif name == "add_project_knowledge":
-        if not web_manager.current_project:
+    elif name == "detect_current_project_context":
+        detected_project = await web_manager.detect_current_project_context()
+        
+        if detected_project:
+            web_manager.current_project = detected_project
             return [TextContent(
                 type="text",
-                text="❌ No project selected. Use `select_project` first to choose a project."
+                text=f"✅ Successfully detected current project context!\n\n**{detected_project.name}**\n- ID: `{detected_project.id}`\n- URL: {detected_project.url}\n\n🎯 This project is now selected for adding knowledge. You can use `add_project_knowledge` to add knowledge directly to this project!"
             )]
+        else:
+            return [TextContent(
+                type="text",
+                text="❌ Could not detect current project context.\n\n**Troubleshooting:**\n1. Make sure you have a Claude project open in your browser\n2. Check that Claude Desktop is running\n3. Try using `list_claude_projects` to see available projects\n4. You can manually select a project with `select_project`"
+            )]
+    
+    elif name == "add_project_knowledge":
+        # Auto-detect current project if none is selected
+        if not web_manager.current_project:
+            print("🔍 No project selected, attempting auto-detection...", file=sys.stderr)
+            detected_project = await web_manager.detect_current_project_context()
+            
+            if detected_project:
+                web_manager.current_project = detected_project
+                print(f"✅ Auto-detected project: {detected_project.name}", file=sys.stderr)
+            else:
+                return [TextContent(
+                    type="text",
+                    text="❌ No project selected and could not auto-detect current project.\n\n**Please try one of these options:**\n1. Use `detect_current_project_context` to auto-detect your current project\n2. Use `list_claude_projects` and `select_project` to manually choose a project\n3. Make sure you have a Claude project open in your browser"
+                )]
         
         entry = ProjectKnowledgeEntry(
             title=arguments["title"],
@@ -577,7 +796,7 @@ async def call_tool(name: str, arguments: dict) -> List[TextContent]:
         return [TextContent(type="text", text=response)]
     
     elif name == "access_current_project":
-        project_id = arguments.get("project_id", "019763b5-7ee3-7585-9bde-18f5a8a387be")
+        project_id = arguments["project_id"]
         
         print(f"🎯 Attempting to access project: {project_id}", file=sys.stderr)
         success = await web_manager.access_current_project(project_id)
@@ -586,12 +805,12 @@ async def call_tool(name: str, arguments: dict) -> List[TextContent]:
             project = web_manager.current_project
             return [TextContent(
                 type="text",
-                text=f"✅ Successfully connected to your current project!\n\n**{project.name}**\n- ID: `{project.id}`\n- URL: {project.url}\n\n🎉 You can now use `add_project_knowledge` to add knowledge directly to this project!\n\n**Browser window should be visible** - you may need to log in to Claude if prompted."
+                text=f"✅ Successfully connected to project!\n\n**{project.name}**\n- ID: `{project.id}`\n- URL: {project.url}\n\n🎉 You can now use `add_project_knowledge` to add knowledge directly to this project!\n\n**Browser window should be visible** - you may need to log in to Claude if prompted."
             )]
         else:
             return [TextContent(
                 type="text",
-                text=f"❌ Could not access project {project_id}.\n\n**Troubleshooting:**\n1. Check if a browser window opened - you may need to log in to Claude\n2. Make sure the project ID is correct: {project_id}\n3. Verify you have access to this project\n4. Try running this command again after logging in"
+                text=f"❌ Could not access project {project_id}.\n\n**Troubleshooting:**\n1. Check if a browser window opened - you may need to log in to Claude\n2. Make sure the project ID is correct: {project_id}\n3. Verify you have access to this project\n4. Try running this command again after logging in\n5. Use `detect_current_project_context` for automatic detection"
             )]
     
     else:
