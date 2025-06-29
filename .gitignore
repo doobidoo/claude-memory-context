@@ -25,3 +25,4 @@ Thumbs.db
 *.swp
 *.swo
 memory-context.txt
+__pycache__/

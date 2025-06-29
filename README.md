@@ -60,11 +60,7 @@ For more reliable, tested functionality, update your `claude_desktop_config.json
 "claude-project-knowledge": {
     "command": "/Users/hkr/anaconda3/bin/python3", 
     "args": ["/Users/hkr/Documents/GitHub/claude-memory-context/mcp-project-knowledge-server.py"],
-    "env": {
-        "CLAUDE_PROJECT_ID": "your-project-id-optional",
-        "CLAUDE_PROJECT_NAME": "Your Project Name",
-        "ANTHROPIC_API_KEY": "your-api-key-optional"
-    }
+    "env": {}
 }
 ```
 
