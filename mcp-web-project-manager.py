@@ -75,8 +75,12 @@ class ClaudeWebProjectManager:
             
             self.browser = await playwright.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
-                headless=True,  # Set to False for debugging
-                args=['--disable-blink-features=AutomationControlled']
+                headless=False,  # Show browser window so user can log in if needed
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-web-security',
+                    '--disable-features=VizDisplayCompositor'
+                ]
             )
             
             self.page = await self.browser.new_page()
@@ -92,21 +96,54 @@ class ClaudeWebProjectManager:
     async def detect_login_status(self) -> bool:
         """Check if user is logged into Claude"""
         try:
-            await self.page.wait_for_load_state('networkidle', timeout=10000)
+            await self.page.wait_for_load_state('networkidle', timeout=15000)
             
-            # Check for login indicators
-            if await self.page.locator('[data-testid="login-button"]').count() > 0:
-                return False  # Login button present = not logged in
+            # Wait a bit more for dynamic content
+            await self.page.wait_for_timeout(3000)
             
-            if await self.page.locator('[data-testid="user-menu"]').count() > 0:
-                return True  # User menu present = logged in
-            
-            # Check URL
+            # Check URL first
             current_url = self.page.url
+            print(f"🌐 Current URL: {current_url}", file=sys.stderr)
+            
             if 'login' in current_url or 'auth' in current_url:
+                print("⚠️ On login page - please log in to Claude in the browser window", file=sys.stderr)
                 return False
+            
+            # Check for various login/logout indicators
+            login_selectors = [
+                'button:has-text("Log in")',
+                'button:has-text("Sign in")',
+                'a:has-text("Log in")',
+                'a:has-text("Sign in")',
+                '[data-testid="login-button"]'
+            ]
+            
+            for selector in login_selectors:
+                if await self.page.locator(selector).count() > 0:
+                    print("⚠️ Login button found - please log in to Claude in the browser window", file=sys.stderr)
+                    return False
+            
+            # Check for user menu or profile indicators
+            user_selectors = [
+                '[data-testid="user-menu"]',
+                'button[aria-label*="user" i]',
+                'button[aria-label*="profile" i]',
+                '.user-menu',
+                '.profile-menu'
+            ]
+            
+            for selector in user_selectors:
+                if await self.page.locator(selector).count() > 0:
+                    print("✅ User menu found - logged in successfully", file=sys.stderr)
+                    return True
+            
+            # Check if we can access a protected page
+            if 'claude.ai' in current_url and 'login' not in current_url:
+                print("✅ On Claude.ai and not on login page - assuming logged in", file=sys.stderr)
+                return True
                 
-            return True
+            print("⚠️ Could not determine login status - check browser window", file=sys.stderr)
+            return False
             
         except Exception as e:
             print(f"⚠️ Could not determine login status: {e}", file=sys.stderr)
@@ -119,7 +156,12 @@ class ClaudeWebProjectManager:
                 return []
             
             if not await self.detect_login_status():
-                print("❌ Not logged into Claude. Please log in via browser first.", file=sys.stderr)
+                print("❌ Not logged into Claude. A browser window should have opened.", file=sys.stderr)
+                print("📋 Instructions:", file=sys.stderr)
+                print("   1. Look for the Chrome/Chromium browser window that opened", file=sys.stderr)
+                print("   2. Log in to Claude in that browser window", file=sys.stderr)
+                print("   3. Try this command again after logging in", file=sys.stderr)
+                print("   4. The browser window will stay open to maintain your session", file=sys.stderr)
                 return []
             
             # Navigate to projects page
