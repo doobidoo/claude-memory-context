@@ -71,26 +71,39 @@ class ClaudeWebProjectManager:
         try:
             playwright = await async_playwright().start()
             # Use persistent context to maintain login state
-            user_data_dir = os.path.expanduser("~/Library/Application Support/Claude/browser-data")
+            user_data_dir = os.path.expanduser("~/Library/Application Support/Claude/playwright-data")
+            
+            print(f"🔧 Using browser data directory: {user_data_dir}", file=sys.stderr)
             
             self.browser = await playwright.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
-                headless=False,  # Show browser window so user can log in if needed
+                headless=False,  # Show browser window
+                viewport={'width': 1280, 'height': 720},
                 args=[
                     '--disable-blink-features=AutomationControlled',
                     '--disable-web-security',
-                    '--disable-features=VizDisplayCompositor'
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox'
                 ]
             )
             
             self.page = await self.browser.new_page()
-            await self.page.goto("https://claude.ai")
             
-            print("🌐 Browser initialized for Claude web interface", file=sys.stderr)
+            # Set a proper user agent
+            await self.page.set_extra_http_headers({
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            })
+            
+            print("🌐 Loading Claude web interface...", file=sys.stderr)
+            await self.page.goto("https://claude.ai", wait_until='networkidle')
+            
+            print("✅ Browser initialized successfully", file=sys.stderr)
             return True
             
         except Exception as e:
             print(f"❌ Failed to initialize browser: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
             return False
     
     async def detect_login_status(self) -> bool:
@@ -227,6 +240,67 @@ class ClaudeWebProjectManager:
         except Exception as e:
             print(f"❌ Failed to list projects: {e}", file=sys.stderr)
             return []
+    
+    async def access_current_project(self, project_id: str = "019763b5-7ee3-7585-9bde-18f5a8a387be") -> bool:
+        """Access the current project directly by ID"""
+        try:
+            if not self.page:
+                if not await self.init_browser():
+                    return False
+            
+            # Go directly to the project
+            project_url = f"https://claude.ai/project/{project_id}"
+            print(f"🎯 Accessing project directly: {project_url}", file=sys.stderr)
+            
+            await self.page.goto(project_url, wait_until='networkidle')
+            await self.page.wait_for_timeout(3000)  # Wait for page to load
+            
+            # Check if we can access the project
+            current_url = self.page.url
+            print(f"📍 Current URL: {current_url}", file=sys.stderr)
+            
+            if project_id in current_url:
+                print("✅ Successfully accessed project!", file=sys.stderr)
+                
+                # Try to get project name from the page
+                project_name = "Current Project"
+                try:
+                    # Look for project title elements
+                    title_selectors = [
+                        'h1', '[data-testid="project-title"]', '.project-title', 
+                        'title', '[class*="title"]'
+                    ]
+                    
+                    for selector in title_selectors:
+                        elements = await self.page.locator(selector).all()
+                        for element in elements:
+                            text = await element.text_content()
+                            if text and len(text.strip()) > 2 and len(text) < 100:
+                                project_name = text.strip()
+                                break
+                        if project_name != "Current Project":
+                            break
+                    
+                except Exception:
+                    pass
+                
+                self.current_project = ClaudeProject(
+                    id=project_id,
+                    name=project_name,
+                    url=project_url
+                )
+                
+                print(f"🎉 Project set: {project_name} (ID: {project_id})", file=sys.stderr)
+                return True
+            else:
+                print(f"❌ Could not access project. Current URL: {current_url}", file=sys.stderr)
+                return False
+                
+        except Exception as e:
+            print(f"❌ Failed to access project: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            return False
     
     async def select_project(self, project_id: str) -> bool:
         """Select and navigate to a specific project"""
@@ -411,6 +485,16 @@ async def list_tools() -> List[Tool]:
                 "properties": {},
                 "additionalProperties": False
             }
+        ),
+        Tool(
+            name="access_current_project",
+            description="Access the current Claude Desktop project directly (019763b5-7ee3-7585-9bde-18f5a8a387be). Use this to connect to your active project.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string", "description": "Project ID (defaults to current)", "default": "019763b5-7ee3-7585-9bde-18f5a8a387be"}
+                }
+            }
         )
     ]
 
@@ -491,6 +575,24 @@ async def call_tool(name: str, arguments: dict) -> List[TextContent]:
         response = f"# Current Project\n\n**{project.name}**\n- ID: `{project.id}`\n- URL: {project.url}\n\nReady to add knowledge to this project!"
         
         return [TextContent(type="text", text=response)]
+    
+    elif name == "access_current_project":
+        project_id = arguments.get("project_id", "019763b5-7ee3-7585-9bde-18f5a8a387be")
+        
+        print(f"🎯 Attempting to access project: {project_id}", file=sys.stderr)
+        success = await web_manager.access_current_project(project_id)
+        
+        if success:
+            project = web_manager.current_project
+            return [TextContent(
+                type="text",
+                text=f"✅ Successfully connected to your current project!\n\n**{project.name}**\n- ID: `{project.id}`\n- URL: {project.url}\n\n🎉 You can now use `add_project_knowledge` to add knowledge directly to this project!\n\n**Browser window should be visible** - you may need to log in to Claude if prompted."
+            )]
+        else:
+            return [TextContent(
+                type="text",
+                text=f"❌ Could not access project {project_id}.\n\n**Troubleshooting:**\n1. Check if a browser window opened - you may need to log in to Claude\n2. Make sure the project ID is correct: {project_id}\n3. Verify you have access to this project\n4. Try running this command again after logging in"
+            )]
     
     else:
         return [TextContent(
